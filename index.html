@@ -699,13 +699,14 @@
        ══════════════════════════════════════════ -->
   <script type="module">
     // --- Firebase SDK Modular Imports ---
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.14.0/firebase-app.js";
+    import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.14.0/firebase-analytics.js";
     import { 
       getFirestore, collection, doc, addDoc, getDocs, updateDoc, deleteDoc, onSnapshot, query, orderBy, limit, setDoc, getDoc, serverTimestamp 
-    } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+    } from "https://www.gstatic.com/firebasejs/12.14.0/firebase-firestore.js";
     import { 
       getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged, createUserWithEmailAndPassword
-    } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+    } from "https://www.gstatic.com/firebasejs/12.14.0/firebase-auth.js";
 
     // Firebase Config (Homago)
     const firebaseConfig = {
@@ -719,9 +720,10 @@
     };
 
     // Initialize Firebase
-    let db, auth;
+    let db, auth, analytics;
     try {
       const app = initializeApp(firebaseConfig);
+      analytics = getAnalytics(app);
       auth = getAuth(app);
       db = getFirestore(app);
       console.log("HOMAGO ADMIN: Firebase Initialized successfully.");
