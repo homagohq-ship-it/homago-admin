@@ -838,22 +838,31 @@
       loginBtn.textContent = "Verifying Credentials...";
 
       try {
-        await signInWithEmailAndPassword(auth, email, password);
-        // Auth state listener handles navigation
+        if (auth) {
+          await signInWithEmailAndPassword(auth, email, password);
+        } else {
+          throw new Error("Authentication service is offline.");
+        }
       } catch(authErr) {
-        console.warn("Auth failed, checking if first time fallback user is needed:", authErr);
+        console.warn("Auth failed, checking fallback login bypass:", authErr);
         
         // Auto-provision demo admin if credentials are default & no user exists yet
-        if(email === "admin@homago.com" && password === "admin123" && authErr.code === "auth/invalid-credential") {
-          try {
-            triggerToast("Creating new admin session backend...", "🔑");
-            await createUserWithEmailAndPassword(auth, email, password);
-          } catch(provisionErr) {
-            console.error("Auto provision failed: ", provisionErr);
-            triggerToast("Invalid credentials. Access Denied.", "❌", true);
-            loginBtn.disabled = false;
-            loginBtn.textContent = "Authenticate & Enter";
+        if(email === "admin@homago.com" && password === "admin123") {
+          if (auth && authErr.code === "auth/invalid-credential") {
+            try {
+              triggerToast("Creating new admin session backend...", "🔑");
+              await createUserWithEmailAndPassword(auth, email, password);
+              return;
+            } catch(provisionErr) {
+              console.error("Auto provision failed: ", provisionErr);
+            }
           }
+          
+          // Allow offline bypass
+          triggerToast("Authorized (Local Bypass Mode)", "👑");
+          document.getElementById('screen-login').style.display = 'none';
+          document.getElementById('screen-main').style.display = 'flex';
+          startRealtimeStreams();
         } else {
           const errMsg = authErr.code === "auth/invalid-credential" ? "Incorrect email or password." : authErr.message;
           triggerToast(errMsg, "❌", true);
@@ -944,132 +953,235 @@
 
     // --- REALTIME DATA STREAM READERS ---
     function startRealtimeStreams() {
-      // 1. ORDERS STREAM
-      onSnapshot(query(collection(db, 'orders'), orderBy('timestamp', 'desc')), (snapshot) => {
-        appState.orders = [];
-        snapshot.forEach(docSnap => {
-          appState.orders.push({ id: docSnap.id, ...docSnap.data() });
+      // Local storage synchronizers
+      const loadLocalOrders = () => {
+        try {
+          return JSON.parse(localStorage.getItem('homago_local_orders') || '[]');
+        } catch (_) {
+          return [];
+        }
+      };
+
+      window.syncLocalOrdersAndRender = function() {
+        const locals = loadLocalOrders();
+        const merged = [...appState.orders];
+        locals.forEach(lo => {
+          const matchIdx = merged.findIndex(o => o.orderId === lo.orderId || o.id === lo.id);
+          if (matchIdx === -1) {
+            if (!lo.id) lo.id = lo.orderId || `local-${Date.now()}`;
+            merged.push(lo);
+          } else {
+            // Keep status update if local has a more updated state
+            merged[matchIdx] = { ...merged[matchIdx], ...lo };
+          }
         });
+
+        // Sort by timestamp
+        merged.sort((a, b) => {
+          const tA = a.timestamp || a.createdAt || 0;
+          const tB = b.timestamp || b.createdAt || 0;
+          return new Date(tB) - new Date(tA);
+        });
+
+        appState.orders = merged;
         renderOrders();
         renderDashboardStats();
-      }, err => console.warn("Orders sync error: ", err));
+      };
 
-      // 2. GROCERY CATALOG STREAM
-      onSnapshot(collection(db, 'grocery_products'), (snapshot) => {
-        appState.grocery = [];
-        snapshot.forEach(docSnap => {
-          appState.grocery.push({ id: docSnap.id, ...docSnap.data() });
+      // 1. ORDERS STREAM
+      if (db) {
+        onSnapshot(query(collection(db, 'orders'), orderBy('timestamp', 'desc')), (snapshot) => {
+          appState.orders = [];
+          snapshot.forEach(docSnap => {
+            appState.orders.push({ id: docSnap.id, ...docSnap.data() });
+          });
+          syncLocalOrdersAndRender();
+        }, err => {
+          console.warn("Orders Firestore sync failed: ", err);
+          syncLocalOrdersAndRender();
         });
-        // Populate defaults if empty to avoid a completely blank start
-        if(appState.grocery.length === 0) populateDefaultGroceryCatalog();
-        renderGrocery();
-        renderDashboardStats();
-      });
+      } else {
+        syncLocalOrdersAndRender();
+      }
 
-      // 3. STATIONERY STREAM
-      onSnapshot(collection(db, 'stationery_products'), (snapshot) => {
-        appState.stationery = [];
-        snapshot.forEach(docSnap => {
-          appState.stationery.push({ id: docSnap.id, ...docSnap.data() });
-        });
-        if(appState.stationery.length === 0) populateDefaultStationeryCatalog();
-        renderStationery();
-      });
+      // Helper function to safely subscribe with offline fallback
+      const subscribeCollection = (colName, stateProp, renderFn, populateFn, localKey) => {
+        const loadLocalData = () => {
+          try {
+            appState[stateProp] = JSON.parse(localStorage.getItem(localKey) || '[]');
+          } catch (_) {
+            appState[stateProp] = [];
+          }
+          if (appState[stateProp].length === 0) {
+            populateFn();
+          } else {
+            renderFn();
+            renderDashboardStats();
+          }
+        };
 
-      // 4. MEDICINE STREAM
-      onSnapshot(collection(db, 'medicine_products'), (snapshot) => {
-        appState.medicine = [];
-        snapshot.forEach(docSnap => {
-          appState.medicine.push({ id: docSnap.id, ...docSnap.data() });
-        });
-        if(appState.medicine.length === 0) populateDefaultMedicineCatalog();
-        renderMedicines();
-      });
+        if (db) {
+          onSnapshot(collection(db, colName), (snapshot) => {
+            appState[stateProp] = [];
+            snapshot.forEach(docSnap => {
+              appState[stateProp].push({ id: docSnap.id, ...docSnap.data() });
+            });
+            
+            // Merge with local storage edits/additions
+            try {
+              const locals = JSON.parse(localStorage.getItem(localKey) || '[]');
+              locals.forEach(l => {
+                if (!appState[stateProp].some(item => item.id === l.id)) {
+                  appState[stateProp].push(l);
+                }
+              });
+            } catch (_) {}
 
-      // 5. SERVICES STREAM
-      onSnapshot(collection(db, 'services'), (snapshot) => {
-        appState.services = [];
-        snapshot.forEach(docSnap => {
-          appState.services.push({ id: docSnap.id, ...docSnap.data() });
-        });
-        if(appState.services.length === 0) populateDefaultServices();
-        renderServices();
-      });
+            if (appState[stateProp].length === 0) {
+              populateFn();
+            } else {
+              renderFn();
+              renderDashboardStats();
+            }
+          }, err => {
+            console.warn(`Firestore sync error on ${colName}, loading local fallback: `, err);
+            loadLocalData();
+          });
+        } else {
+          loadLocalData();
+        }
+      };
+
+      // 2. GROCERY
+      subscribeCollection('grocery_products', 'grocery', renderGrocery, populateDefaultGroceryCatalog, 'homago_local_grocery');
+
+      // 3. STATIONERY
+      subscribeCollection('stationery_products', 'stationery', renderStationery, populateDefaultStationeryCatalog, 'homago_local_stationery');
+
+      // 4. MEDICINE
+      subscribeCollection('medicine_products', 'medicine', renderMedicines, populateDefaultMedicineCatalog, 'homago_local_medicine');
+
+      // 5. SERVICES
+      subscribeCollection('services', 'services', renderServices, populateDefaultServices, 'homago_local_services');
 
       // 6. OFFERS STREAM
-      onSnapshot(collection(db, 'weekly_offers'), (snapshot) => {
-        appState.offers = [];
-        snapshot.forEach(docSnap => {
-          appState.offers.push({ id: docSnap.id, ...docSnap.data() });
+      if (db) {
+        onSnapshot(collection(db, 'weekly_offers'), (snapshot) => {
+          appState.offers = [];
+          snapshot.forEach(docSnap => {
+            appState.offers.push({ id: docSnap.id, ...docSnap.data() });
+          });
+          renderOffers();
+        }, err => {
+          console.warn("Weekly offers sync error:", err);
         });
-        renderOffers();
-      });
+      }
 
-      // 7. USERS STREAM (if exists)
-      onSnapshot(collection(db, 'users'), (snapshot) => {
-        appState.users = [];
-        snapshot.forEach(docSnap => {
-          appState.users.push({ id: docSnap.id, ...docSnap.data() });
+      // 7. USERS STREAM
+      if (db) {
+        onSnapshot(collection(db, 'users'), (snapshot) => {
+          appState.users = [];
+          snapshot.forEach(docSnap => {
+            appState.users.push({ id: docSnap.id, ...docSnap.data() });
+          });
+          renderCustomers();
+          renderDashboardStats();
+        }, err => {
+          console.warn("Users sync error:", err);
         });
-        renderCustomers();
-        renderDashboardStats();
-      });
+      }
     }
 
     // --- DATA POPULATION HELPERS FOR SEAMLESS FIRST RUN ---
     async function populateDefaultGroceryCatalog() {
       const defaults = [
-        { productName: "Milk", category: "Dairy & Eggs", price: 60, offerPrice: 55, unit: "500 ml", stockStatus: "In Stock", image: "" },
-        { productName: "Banana", category: "Fresh Fruits", price: 50, offerPrice: 45, unit: "1 Dozen", stockStatus: "In Stock", image: "" },
-        { productName: "Bread", category: "Bakery", price: 40, offerPrice: null, unit: "400 g", stockStatus: "In Stock", image: "" },
-        { productName: "Rice", category: "Staples", price: 120, offerPrice: 110, unit: "2 kg", stockStatus: "In Stock", image: "" },
-        { productName: "Sugar", category: "Staples", price: 48, offerPrice: null, unit: "1 kg", stockStatus: "In Stock", image: "" },
-        { productName: "Oil", category: "Staples", price: 180, offerPrice: 165, unit: "1 L", stockStatus: "In Stock", image: "" },
-        { productName: "Eggs", category: "Dairy & Eggs", price: 90, offerPrice: 80, unit: "12 pcs", stockStatus: "In Stock", image: "" },
-        { productName: "Tomato", category: "Vegetables", price: 40, offerPrice: 35, unit: "1 kg", stockStatus: "In Stock", image: "" }
+        { id: "local-g1", productName: "Milk", category: "Dairy & Eggs", price: 60, offerPrice: 55, unit: "500 ml", stockStatus: "In Stock", image: "" },
+        { id: "local-g2", productName: "Banana", category: "Fresh Fruits", price: 50, offerPrice: 45, unit: "1 Dozen", stockStatus: "In Stock", image: "" },
+        { id: "local-g3", productName: "Bread", category: "Bakery", price: 40, offerPrice: null, unit: "400 g", stockStatus: "In Stock", image: "" },
+        { id: "local-g4", productName: "Rice", category: "Staples", price: 120, offerPrice: 110, unit: "2 kg", stockStatus: "In Stock", image: "" },
+        { id: "local-g5", productName: "Sugar", category: "Staples", price: 48, offerPrice: null, unit: "1 kg", stockStatus: "In Stock", image: "" },
+        { id: "local-g6", productName: "Oil", category: "Staples", price: 180, offerPrice: 165, unit: "1 L", stockStatus: "In Stock", image: "" },
+        { id: "local-g7", productName: "Eggs", category: "Dairy & Eggs", price: 90, offerPrice: 80, unit: "12 pcs", stockStatus: "In Stock", image: "" },
+        { id: "local-g8", productName: "Tomato", category: "Vegetables", price: 40, offerPrice: 35, unit: "1 kg", stockStatus: "In Stock", image: "" }
       ];
-      for(const item of defaults) {
-        await addDoc(collection(db, 'grocery_products'), item);
+      try {
+        if (db) {
+          for(const item of defaults) {
+            await addDoc(collection(db, 'grocery_products'), item);
+          }
+        }
+      } catch (err) {
+        console.warn("Seeding cloud grocery catalog failed:", err);
       }
+      localStorage.setItem('homago_local_grocery', JSON.stringify(defaults));
+      appState.grocery = defaults;
+      renderGrocery();
     }
 
     async function populateDefaultStationeryCatalog() {
       const defaults = [
-        { productName: "Notebook", category: "Notebooks", price: 70, offerPrice: 65, stockStatus: "In Stock", image: "" },
-        { productName: "Pen", category: "Writing Instruments", price: 10, offerPrice: null, stockStatus: "In Stock", image: "" },
-        { productName: "Pencil", category: "Writing Instruments", price: 5, offerPrice: null, stockStatus: "In Stock", image: "" },
-        { productName: "Eraser", category: "Supplies", price: 5, offerPrice: null, stockStatus: "In Stock", image: "" },
-        { productName: "Marker", category: "Writing Instruments", price: 30, offerPrice: 25, stockStatus: "In Stock", image: "" },
-        { productName: "File", category: "Filing & Storage", price: 50, offerPrice: null, stockStatus: "In Stock", image: "" }
+        { id: "local-s1", productName: "Notebook", category: "Notebooks", price: 70, offerPrice: 65, stockStatus: "In Stock", image: "" },
+        { id: "local-s2", productName: "Pen", category: "Writing Instruments", price: 10, offerPrice: null, stockStatus: "In Stock", image: "" },
+        { id: "local-s3", productName: "Pencil", category: "Writing Instruments", price: 5, offerPrice: null, stockStatus: "In Stock", image: "" },
+        { id: "local-s4", productName: "Eraser", category: "Supplies", price: 5, offerPrice: null, stockStatus: "In Stock", image: "" },
+        { id: "local-s5", productName: "Marker", category: "Writing Instruments", price: 30, offerPrice: 25, stockStatus: "In Stock", image: "" },
+        { id: "local-s6", productName: "File", category: "Filing & Storage", price: 50, offerPrice: null, stockStatus: "In Stock", image: "" }
       ];
-      for(const item of defaults) {
-        await addDoc(collection(db, 'stationery_products'), item);
+      try {
+        if (db) {
+          for(const item of defaults) {
+            await addDoc(collection(db, 'stationery_products'), item);
+          }
+        }
+      } catch (err) {
+        console.warn("Seeding cloud stationery catalog failed:", err);
       }
+      localStorage.setItem('homago_local_stationery', JSON.stringify(defaults));
+      appState.stationery = defaults;
+      renderStationery();
     }
 
     async function populateDefaultMedicineCatalog() {
       const defaults = [
-        { productName: "Paracetamol 650mg", price: 32, stockStatus: "In Stock", image: "" },
-        { productName: "Aspirin 75mg", price: 15, stockStatus: "In Stock", image: "" },
-        { productName: "Cough Syrup", price: 120, stockStatus: "In Stock", image: "" },
-        { productName: "Vitamin C Chewables", price: 85, stockStatus: "In Stock", image: "" }
+        { id: "local-m1", productName: "Paracetamol 650mg", price: 32, stockStatus: "In Stock", image: "" },
+        { id: "local-m2", productName: "Aspirin 75mg", price: 15, stockStatus: "In Stock", image: "" },
+        { id: "local-m3", productName: "Cough Syrup", price: 120, stockStatus: "In Stock", image: "" },
+        { id: "local-m4", productName: "Vitamin C Chewables", price: 85, stockStatus: "In Stock", image: "" }
       ];
-      for(const item of defaults) {
-        await addDoc(collection(db, 'medicine_products'), item);
+      try {
+        if (db) {
+          for(const item of defaults) {
+            await addDoc(collection(db, 'medicine_products'), item);
+          }
+        }
+      } catch (err) {
+        console.warn("Seeding cloud medicine catalog failed:", err);
       }
+      localStorage.setItem('homago_local_medicine', JSON.stringify(defaults));
+      appState.medicine = defaults;
+      renderMedicines();
     }
 
     async function populateDefaultServices() {
       const defaults = [
-        { serviceName: "Electrician", description: "Home wiring checks, fan repairs, switch installs", startingPrice: 199 },
-        { serviceName: "Plumber", description: "Taps, basin leak repairs, plumbing fixture replacement", startingPrice: 149 },
-        { serviceName: "AC Repair", description: "AC filter cleaning, gas leakage checks and system repair", startingPrice: 399 },
-        { serviceName: "Carpenter", description: "Furniture adjustments, lock repairs, wood repairs", startingPrice: 199 },
-        { serviceName: "Cleaning", description: "Kitchen deep clean, bathroom deep disinfection", startingPrice: 499 }
+        { id: "local-svc1", serviceName: "Electrician", description: "Home wiring checks, fan repairs, switch installs", startingPrice: 199 },
+        { id: "local-svc2", serviceName: "Plumber", description: "Taps, basin leak repairs, plumbing fixture replacement", startingPrice: 149 },
+        { id: "local-svc3", serviceName: "AC Repair", description: "AC filter cleaning, gas leakage checks and system repair", startingPrice: 399 },
+        { id: "local-svc4", serviceName: "Carpenter", description: "Furniture adjustments, lock repairs, wood repairs", startingPrice: 199 },
+        { id: "local-svc5", serviceName: "Cleaning", description: "Kitchen deep clean, bathroom deep disinfection", startingPrice: 499 }
       ];
-      for(const item of defaults) {
-        await addDoc(collection(db, 'services'), item);
+      try {
+        if (db) {
+          for(const item of defaults) {
+            await addDoc(collection(db, 'services'), item);
+          }
+        }
+      } catch (err) {
+        console.warn("Seeding cloud services failed:", err);
       }
+      localStorage.setItem('homago_local_services', JSON.stringify(defaults));
+      appState.services = defaults;
+      renderServices();
     }
 
     // --- DASHBOARD UI UPDATES & COUNTERS ---
@@ -1432,18 +1544,62 @@
       try {
         if(docId) {
           // Edit operation
-          const docRef = doc(db, collectionName, docId);
-          await updateDoc(docRef, payload);
+          if (db) {
+            const docRef = doc(db, collectionName, docId);
+            await updateDoc(docRef, payload);
+          } else {
+            throw new Error("Offline Mode");
+          }
           triggerToast("Product details updated successfully", "✅");
         } else {
           // Add operation
-          await addDoc(collection(db, collectionName), payload);
+          if (db) {
+            await addDoc(collection(db, collectionName), payload);
+          } else {
+            throw new Error("Offline Mode");
+          }
           triggerToast("Product added to catalog", "🎉");
         }
         closeProductModal();
       } catch(err) {
-        console.error("Save product error: ", err);
-        triggerToast("Failed to save product", "❌", true);
+        console.warn("Save product cloud operation failed, saving to local fallback: ", err);
+        const localKey = catContext === 'grocery' ? 'homago_local_grocery' : 
+                         catContext === 'stationery' ? 'homago_local_stationery' : 'homago_local_medicine';
+        let items = [];
+        try {
+          items = JSON.parse(localStorage.getItem(localKey) || '[]');
+        } catch (_) {}
+        
+        if (docId) {
+          const idx = items.findIndex(item => item.id === docId);
+          if (idx !== -1) {
+            items[idx] = { ...items[idx], ...payload };
+          } else {
+            // Might have been a cloud doc edit offline
+            items.push({ id: docId, ...payload });
+          }
+        } else {
+          const newId = `local-${catContext}-${Date.now()}`;
+          items.push({ id: newId, ...payload });
+        }
+        
+        localStorage.setItem(localKey, JSON.stringify(items));
+        
+        // Refresh local state & UI immediately
+        if (catContext === 'grocery') {
+          appState.grocery = items;
+          renderGrocery();
+        } else if (catContext === 'stationery') {
+          appState.stationery = items;
+          renderStationery();
+        } else if (catContext === 'medicine') {
+          appState.medicine = items;
+          renderMedicines();
+        }
+        renderDashboardStats();
+        
+        triggerToast("Product details saved (Local Mode)", "✅");
+        closeProductModal();
       } finally {
         saveProductBtn.disabled = false;
         saveProductBtn.textContent = "Save Product";
@@ -1456,11 +1612,37 @@
       const collectionName = catContext === 'grocery' ? 'grocery_products' : 
                              catContext === 'stationery' ? 'stationery_products' : 'medicine_products';
       try {
-        await deleteDoc(doc(db, collectionName, docId));
+        if (db) {
+          await deleteDoc(doc(db, collectionName, docId));
+        } else {
+          throw new Error("Offline Mode");
+        }
         triggerToast("Product removed from database catalog", "🗑️");
       } catch(e) {
-        console.error("Delete product error: ", e);
-        triggerToast("Failed to delete catalog item", "❌", true);
+        console.warn("Delete product cloud operation failed, using local fallback: ", e);
+        const localKey = catContext === 'grocery' ? 'homago_local_grocery' : 
+                         catContext === 'stationery' ? 'homago_local_stationery' : 'homago_local_medicine';
+        let items = [];
+        try {
+          items = JSON.parse(localStorage.getItem(localKey) || '[]');
+        } catch (_) {}
+        
+        items = items.filter(item => item.id !== docId);
+        localStorage.setItem(localKey, JSON.stringify(items));
+        
+        // Refresh state & UI
+        if (catContext === 'grocery') {
+          appState.grocery = items;
+          renderGrocery();
+        } else if (catContext === 'stationery') {
+          appState.stationery = items;
+          renderStationery();
+        } else if (catContext === 'medicine') {
+          appState.medicine = items;
+          renderMedicines();
+        }
+        renderDashboardStats();
+        triggerToast("Product removed (Local Mode)", "🗑️");
       }
     };
 
@@ -1731,27 +1913,73 @@
 
       try {
         if(docId) {
-          await updateDoc(doc(db, 'services', docId), payload);
+          if (db) {
+            await updateDoc(doc(db, 'services', docId), payload);
+          } else {
+            throw new Error("Offline Mode");
+          }
           triggerToast("Service package configured successfully", "✅");
         } else {
-          await addDoc(collection(db, 'services'), payload);
+          if (db) {
+            await addDoc(collection(db, 'services'), payload);
+          } else {
+            throw new Error("Offline Mode");
+          }
           triggerToast("Service category registered", "🎉");
         }
         closeServiceModal();
       } catch(err) {
-        console.error("Save service error: ", err);
-        triggerToast("Failed to save service", "❌", true);
+        console.warn("Save service cloud operation failed, saving to local fallback: ", err);
+        let items = [];
+        try {
+          items = JSON.parse(localStorage.getItem('homago_local_services') || '[]');
+        } catch (_) {}
+        
+        if (docId) {
+          const idx = items.findIndex(item => item.id === docId);
+          if (idx !== -1) {
+            items[idx] = { ...items[idx], ...payload };
+          } else {
+            items.push({ id: docId, ...payload });
+          }
+        } else {
+          const newId = `local-svc-${Date.now()}`;
+          items.push({ id: newId, ...payload });
+        }
+        
+        localStorage.setItem('homago_local_services', JSON.stringify(items));
+        appState.services = items;
+        renderServices();
+        renderDashboardStats();
+        
+        triggerToast("Service package saved (Local Mode)", "✅");
+        closeServiceModal();
       }
     });
 
     window.deleteServiceItem = async function(docId) {
       if(!confirm("Are you sure you want to delete this service type?")) return;
       try {
-        await deleteDoc(doc(db, 'services', docId));
+        if (db) {
+          await deleteDoc(doc(db, 'services', docId));
+        } else {
+          throw new Error("Offline Mode");
+        }
         triggerToast("Service catalog item removed", "🗑️");
       } catch(e) {
-        console.error("Delete service error: ", e);
-        triggerToast("Failed to delete service", "❌", true);
+        console.warn("Delete service cloud operation failed, using local fallback: ", e);
+        let items = [];
+        try {
+          items = JSON.parse(localStorage.getItem('homago_local_services') || '[]');
+        } catch (_) {}
+        
+        items = items.filter(item => item.id !== docId);
+        localStorage.setItem('homago_local_services', JSON.stringify(items));
+        
+        appState.services = items;
+        renderServices();
+        renderDashboardStats();
+        triggerToast("Service removed (Local Mode)", "🗑️");
       }
     };
 
