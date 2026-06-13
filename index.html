@@ -1004,65 +1004,33 @@
         syncLocalOrdersAndRender();
       }
 
-      // Helper function to safely subscribe with offline fallback
-      const subscribeCollection = (colName, stateProp, renderFn, populateFn, localKey) => {
-        const loadLocalData = () => {
-          try {
-            appState[stateProp] = JSON.parse(localStorage.getItem(localKey) || '[]');
-          } catch (_) {
-            appState[stateProp] = [];
-          }
-          if (appState[stateProp].length === 0) {
-            populateFn();
-          } else {
-            renderFn();
-            renderDashboardStats();
-          }
-        };
-
+      // Helper function to safely subscribe
+      const subscribeCollection = (colName, stateProp, renderFn) => {
         if (db) {
           onSnapshot(collection(db, colName), (snapshot) => {
             appState[stateProp] = [];
             snapshot.forEach(docSnap => {
               appState[stateProp].push({ id: docSnap.id, ...docSnap.data() });
             });
-            
-            // Merge with local storage edits/additions
-            try {
-              const locals = JSON.parse(localStorage.getItem(localKey) || '[]');
-              locals.forEach(l => {
-                if (!appState[stateProp].some(item => item.id === l.id)) {
-                  appState[stateProp].push(l);
-                }
-              });
-            } catch (_) {}
-
-            if (appState[stateProp].length === 0) {
-              populateFn();
-            } else {
-              renderFn();
-              renderDashboardStats();
-            }
+            renderFn();
+            renderDashboardStats();
           }, err => {
-            console.warn(`Firestore sync error on ${colName}, loading local fallback: `, err);
-            loadLocalData();
+            console.error(`Firestore sync error on ${colName}: `, err);
           });
-        } else {
-          loadLocalData();
         }
       };
 
       // 2. GROCERY
-      subscribeCollection('grocery_products', 'grocery', renderGrocery, populateDefaultGroceryCatalog, 'homago_local_grocery');
+      subscribeCollection('grocery_products', 'grocery', renderGrocery);
 
       // 3. STATIONERY
-      subscribeCollection('stationery_products', 'stationery', renderStationery, populateDefaultStationeryCatalog, 'homago_local_stationery');
+      subscribeCollection('stationery_products', 'stationery', renderStationery);
 
       // 4. MEDICINE
-      subscribeCollection('medicine_products', 'medicine', renderMedicines, populateDefaultMedicineCatalog, 'homago_local_medicine');
+      subscribeCollection('medicine_products', 'medicine', renderMedicines);
 
       // 5. SERVICES
-      subscribeCollection('services', 'services', renderServices, populateDefaultServices, 'homago_local_services');
+      subscribeCollection('services', 'services', renderServices);
 
       // 6. OFFERS STREAM
       if (db) {
@@ -1090,98 +1058,6 @@
           console.warn("Users sync error:", err);
         });
       }
-    }
-
-    // --- DATA POPULATION HELPERS FOR SEAMLESS FIRST RUN ---
-    async function populateDefaultGroceryCatalog() {
-      const defaults = [
-        { id: "local-g1", productName: "Milk", category: "Dairy & Eggs", price: 60, offerPrice: 55, unit: "500 ml", stockStatus: "In Stock", image: "" },
-        { id: "local-g2", productName: "Banana", category: "Fresh Fruits", price: 50, offerPrice: 45, unit: "1 Dozen", stockStatus: "In Stock", image: "" },
-        { id: "local-g3", productName: "Bread", category: "Bakery", price: 40, offerPrice: null, unit: "400 g", stockStatus: "In Stock", image: "" },
-        { id: "local-g4", productName: "Rice", category: "Staples", price: 120, offerPrice: 110, unit: "2 kg", stockStatus: "In Stock", image: "" },
-        { id: "local-g5", productName: "Sugar", category: "Staples", price: 48, offerPrice: null, unit: "1 kg", stockStatus: "In Stock", image: "" },
-        { id: "local-g6", productName: "Oil", category: "Staples", price: 180, offerPrice: 165, unit: "1 L", stockStatus: "In Stock", image: "" },
-        { id: "local-g7", productName: "Eggs", category: "Dairy & Eggs", price: 90, offerPrice: 80, unit: "12 pcs", stockStatus: "In Stock", image: "" },
-        { id: "local-g8", productName: "Tomato", category: "Vegetables", price: 40, offerPrice: 35, unit: "1 kg", stockStatus: "In Stock", image: "" }
-      ];
-      try {
-        if (db) {
-          for(const item of defaults) {
-            await addDoc(collection(db, 'grocery_products'), item);
-          }
-        }
-      } catch (err) {
-        console.warn("Seeding cloud grocery catalog failed:", err);
-      }
-      localStorage.setItem('homago_local_grocery', JSON.stringify(defaults));
-      appState.grocery = defaults;
-      renderGrocery();
-    }
-
-    async function populateDefaultStationeryCatalog() {
-      const defaults = [
-        { id: "local-s1", productName: "Notebook", category: "Notebooks", price: 70, offerPrice: 65, stockStatus: "In Stock", image: "" },
-        { id: "local-s2", productName: "Pen", category: "Writing Instruments", price: 10, offerPrice: null, stockStatus: "In Stock", image: "" },
-        { id: "local-s3", productName: "Pencil", category: "Writing Instruments", price: 5, offerPrice: null, stockStatus: "In Stock", image: "" },
-        { id: "local-s4", productName: "Eraser", category: "Supplies", price: 5, offerPrice: null, stockStatus: "In Stock", image: "" },
-        { id: "local-s5", productName: "Marker", category: "Writing Instruments", price: 30, offerPrice: 25, stockStatus: "In Stock", image: "" },
-        { id: "local-s6", productName: "File", category: "Filing & Storage", price: 50, offerPrice: null, stockStatus: "In Stock", image: "" }
-      ];
-      try {
-        if (db) {
-          for(const item of defaults) {
-            await addDoc(collection(db, 'stationery_products'), item);
-          }
-        }
-      } catch (err) {
-        console.warn("Seeding cloud stationery catalog failed:", err);
-      }
-      localStorage.setItem('homago_local_stationery', JSON.stringify(defaults));
-      appState.stationery = defaults;
-      renderStationery();
-    }
-
-    async function populateDefaultMedicineCatalog() {
-      const defaults = [
-        { id: "local-m1", productName: "Paracetamol 650mg", price: 32, stockStatus: "In Stock", image: "" },
-        { id: "local-m2", productName: "Aspirin 75mg", price: 15, stockStatus: "In Stock", image: "" },
-        { id: "local-m3", productName: "Cough Syrup", price: 120, stockStatus: "In Stock", image: "" },
-        { id: "local-m4", productName: "Vitamin C Chewables", price: 85, stockStatus: "In Stock", image: "" }
-      ];
-      try {
-        if (db) {
-          for(const item of defaults) {
-            await addDoc(collection(db, 'medicine_products'), item);
-          }
-        }
-      } catch (err) {
-        console.warn("Seeding cloud medicine catalog failed:", err);
-      }
-      localStorage.setItem('homago_local_medicine', JSON.stringify(defaults));
-      appState.medicine = defaults;
-      renderMedicines();
-    }
-
-    async function populateDefaultServices() {
-      const defaults = [
-        { id: "local-svc1", serviceName: "Electrician", description: "Home wiring checks, fan repairs, switch installs", startingPrice: 199 },
-        { id: "local-svc2", serviceName: "Plumber", description: "Taps, basin leak repairs, plumbing fixture replacement", startingPrice: 149 },
-        { id: "local-svc3", serviceName: "AC Repair", description: "AC filter cleaning, gas leakage checks and system repair", startingPrice: 399 },
-        { id: "local-svc4", serviceName: "Carpenter", description: "Furniture adjustments, lock repairs, wood repairs", startingPrice: 199 },
-        { id: "local-svc5", serviceName: "Cleaning", description: "Kitchen deep clean, bathroom deep disinfection", startingPrice: 499 }
-      ];
-      try {
-        if (db) {
-          for(const item of defaults) {
-            await addDoc(collection(db, 'services'), item);
-          }
-        }
-      } catch (err) {
-        console.warn("Seeding cloud services failed:", err);
-      }
-      localStorage.setItem('homago_local_services', JSON.stringify(defaults));
-      appState.services = defaults;
-      renderServices();
     }
 
     // --- DASHBOARD UI UPDATES & COUNTERS ---
@@ -1466,18 +1342,19 @@
       if(productObjString) {
         const prod = JSON.parse(decodeURIComponent(productObjString));
         prodFormId.value = prod.id;
-        prodNameInput.value = prod.productName || '';
+        prodNameInput.value = prod.name || prod.productName || '';
         prodPriceInput.value = prod.price || '';
         prodOfferPriceInput.value = prod.offerPrice || '';
-        prodStockSelect.value = prod.stockStatus || 'In Stock';
+        prodStockSelect.value = prod.stock || prod.stockStatus || 'In Stock';
         
         if(prod.category) prodCategoryInput.value = prod.category;
         if(prod.unit) prodUnitInput.value = prod.unit;
         if(prod.prescriptionRequired) document.getElementById('prodRxRequired').checked = true;
         
-        if(prod.image) {
-          appState.activeProductImageBase64 = prod.image;
-          document.getElementById('prodImgPreview').src = prod.image;
+        const imgVal = prod.imageUrl || prod.image || '';
+        if(imgVal) {
+          appState.activeProductImageBase64 = imgVal;
+          document.getElementById('prodImgPreview').src = imgVal;
           document.getElementById('prodImgUploadZone').classList.add('has-img');
         }
       }
@@ -1521,11 +1398,14 @@
 
       // Prepare target payload
       const payload = {
-        productName: name,
+        name: name,
+        productName: name, // support backward compatibility
         price: price,
         offerPrice: offerPrice,
-        stockStatus: stock,
-        image: imageUrl
+        stock: stock,
+        stockStatus: stock, // support backward compatibility
+        imageUrl: imageUrl,
+        image: imageUrl // support backward compatibility
       };
 
       if(catContext === 'grocery' || catContext === 'stationery') {
@@ -1554,7 +1434,10 @@
         } else {
           // Add operation
           if (db) {
-            await addDoc(collection(db, collectionName), payload);
+            await addDoc(collection(db, collectionName), {
+              ...payload,
+              createdAt: serverTimestamp()
+            });
           } else {
             throw new Error("Offline Mode");
           }
@@ -1656,8 +1539,11 @@
       const stock = groceryStockFilter.value;
 
       const filtered = appState.grocery.filter(item => {
-        const matchesQuery = item.productName.toLowerCase().includes(q) || (item.category || '').toLowerCase().includes(q);
-        const matchesStock = stock === 'ALL' || item.stockStatus === stock;
+        const nameVal = (item.name || item.productName || '').toLowerCase();
+        const categoryVal = (item.category || '').toLowerCase();
+        const matchesQuery = nameVal.includes(q) || categoryVal.includes(q);
+        const stockVal = item.stock || item.stockStatus || 'In Stock';
+        const matchesStock = stock === 'ALL' || stockVal === stock;
         return matchesQuery && matchesStock;
       });
 
@@ -1669,16 +1555,19 @@
 
       grid.innerHTML = filtered.map(item => {
         const prodDataStr = encodeURIComponent(JSON.stringify(item));
+        const nameVal = item.name || item.productName || '';
+        const imgVal = item.imageUrl || item.image || '';
+        const stockVal = item.stock || item.stockStatus || 'In Stock';
         return `
           <div class="product-card">
             <div class="product-img-wrap">
-              ${item.image ? `<img src="${item.image}">` : `<span class="product-img-placeholder">🥦</span>`}
+              ${imgVal ? `<img src="${imgVal}">` : `<span class="product-img-placeholder">🥦</span>`}
             </div>
             <div class="product-card-body">
               <div class="product-cat">${item.category || 'Grocery'} &bull; ${item.unit || '1 Unit'}</div>
-              <h4 class="product-name">${item.productName}</h4>
+              <h4 class="product-name">${nameVal}</h4>
               <div style="margin-bottom:6px;">
-                <span class="badge ${item.stockStatus === 'In Stock' ? 'badge-delivered' : 'badge-cancelled'}">${item.stockStatus}</span>
+                <span class="badge ${stockVal === 'In Stock' ? 'badge-delivered' : 'badge-cancelled'}">${stockVal}</span>
               </div>
               <div class="product-prices">
                 ${item.offerPrice ? `
@@ -1707,7 +1596,9 @@
       const q = stationerySearchInput.value.toLowerCase();
       
       const filtered = appState.stationery.filter(item => {
-        return item.productName.toLowerCase().includes(q) || (item.category || '').toLowerCase().includes(q);
+        const nameVal = (item.name || item.productName || '').toLowerCase();
+        const categoryVal = (item.category || '').toLowerCase();
+        return nameVal.includes(q) || categoryVal.includes(q);
       });
 
       const grid = document.getElementById('stationeryGrid');
@@ -1718,14 +1609,16 @@
 
       grid.innerHTML = filtered.map(item => {
         const prodDataStr = encodeURIComponent(JSON.stringify(item));
+        const nameVal = item.name || item.productName || '';
+        const imgVal = item.imageUrl || item.image || '';
         return `
           <div class="product-card">
             <div class="product-img-wrap">
-              ${item.image ? `<img src="${item.image}">` : `<span class="product-img-placeholder">📚</span>`}
+              ${imgVal ? `<img src="${imgVal}">` : `<span class="product-img-placeholder">📚</span>`}
             </div>
             <div class="product-card-body">
               <div class="product-cat">${item.category || 'Stationery'}</div>
-              <h4 class="product-name">${item.productName}</h4>
+              <h4 class="product-name">${nameVal}</h4>
               <div class="product-prices">
                 ${item.offerPrice ? `
                   <span class="price-main">₹${item.offerPrice}</span>
@@ -1754,28 +1647,33 @@
       const av = medicineAvailabilityFilter.value;
 
       const filtered = appState.medicine.filter(item => {
-        const matchesQuery = item.productName.toLowerCase().includes(q);
-        const matchesAv = av === 'ALL' || (av === 'Available' && item.stockStatus === 'In Stock') || (av === 'Out of Stock' && item.stockStatus === 'Out of Stock');
+        const nameVal = (item.name || item.productName || '').toLowerCase();
+        const matchesQuery = nameVal.includes(q);
+        const stockVal = item.stock || item.stockStatus || 'In Stock';
+        const matchesAv = av === 'ALL' || (av === 'Available' && stockVal === 'In Stock') || (av === 'Out of Stock' && stockVal === 'Out of Stock');
         return matchesQuery && matchesAv;
       });
 
       const grid = document.getElementById('medicineGrid');
       if(filtered.length === 0) {
-        grid.innerHTML = `<div class="empty-state" style="grid-column: 1/-1;">No medicines available.</div>`;
+        grid.innerHTML = `<div class="empty-state" style="grid-column: 1/-1;">No medicines configured.</div>`;
         return;
       }
 
       grid.innerHTML = filtered.map(item => {
         const prodDataStr = encodeURIComponent(JSON.stringify(item));
+        const nameVal = item.name || item.productName || '';
+        const imgVal = item.imageUrl || item.image || '';
+        const stockVal = item.stock || item.stockStatus || 'In Stock';
         return `
           <div class="product-card">
             <div class="product-img-wrap">
-              ${item.image ? `<img src="${item.image}">` : `<span class="product-img-placeholder">💊</span>`}
+              ${imgVal ? `<img src="${imgVal}">` : `<span class="product-img-placeholder">💊</span>`}
             </div>
             <div class="product-card-body">
-              <h4 class="product-name" style="margin-top:6px;">${item.productName}</h4>
+              <h4 class="product-name" style="margin-top:6px;">${nameVal}</h4>
               <div style="margin-bottom:6px; display:flex; gap:4px; flex-wrap:wrap;">
-                <span class="badge ${item.stockStatus === 'In Stock' ? 'badge-delivered' : 'badge-cancelled'}">${item.stockStatus === 'In Stock' ? 'Available' : 'Out of Stock'}</span>
+                <span class="badge ${stockVal === 'In Stock' ? 'badge-delivered' : 'badge-cancelled'}">${stockVal === 'In Stock' ? 'Available' : 'Out of Stock'}</span>
                 ${item.prescriptionRequired ? `<span class="badge badge-cancelled" style="background:#fee2e2; color:#ef4444; border:1px solid #fecaca; font-weight:700;">⚕️ Rx Req</span>` : ''}
               </div>
               <div class="product-prices">
